@@ -1,17 +1,7 @@
-"""Pull founding year, HQ country and a one-line description out of a page.
-
-Order of trust: JSON-LD (structured, the org said it about itself) beats
-regex over visible text. When the page gives two different answers we write
-nothing -- an empty cell with a note is worth more than a coin flip.
-
-Each extractor returns (value, method, note). value=None means "not trusted
-enough to write", and the note says why.
-"""
 
 import json
 import re
 
-# enough for the sectors in this dataset; a real run would use pycountry
 COUNTRIES = {
     "united states": "United States", "usa": "United States", "u.s.": "United States",
     "united kingdom": "United Kingdom", "uk": "United Kingdom", "england": "United Kingdom",

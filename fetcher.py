@@ -77,7 +77,9 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
             # 404/403/410: retrying will not change the answer
             return FetchResult(url, "http_error", _now(), note=f"HTTP {resp.status_code}")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        # parse from bytes: requests guesses ISO-8859-1 when the header has no
+        # charset, which mangled UTF-8 quotes; bs4 reads the <meta charset> itself
+        soup = BeautifulSoup(resp.content, "html.parser")
         visible = soup.get_text(" ", strip=True)
         if len(visible) < MIN_TEXT_CHARS:
             # a 200 with no text is usually a JS-only site; give the browser one shot

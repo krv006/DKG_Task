@@ -71,6 +71,35 @@ def test_description_too_short_refused():
     assert value is None
 
 
+def test_year_with_interlude_between_founded_and_year():
+    value, _, _ = extract_founded_year(
+        Page(body_text="Founded in Berkeley, California, in 2013 by two physicists."))
+    assert value == 2013
+
+
+def test_country_from_page_bottom_when_no_footer_element():
+    value, method, _ = extract_hq_country(
+        Page(body_text="lots of copy\nHQ: Bahnhofstrasse 3, Switzerland"))
+    assert value == "Switzerland" and method == "page-bottom"
+
+
+def test_country_from_hq_city_in_footer():
+    value, _, _ = extract_hq_country(
+        Page(footer_text="(c) 2025 -- 7 rue Leonard de Vinci, Massy"))
+    assert value == "France"
+
+
+def test_country_from_headquartered_claim_outside_footer():
+    page = Page(body_text="We are headquartered in Toronto. " + "filler " * 200)
+    value, method, _ = extract_hq_country(page)
+    assert value == "Canada" and method == "body-statement"
+
+
+def test_name_match_falls_back_to_domain_label():
+    page = Page(title="Ro | Modern healthcare", body_text="Get treatment online with Ro.")
+    assert name_matches(page, "Ro (Roman Health)", "ro.co")
+
+
 def test_name_match_guards_resold_domains():
     assert not name_matches(Page(body_text="Buy this domain today! Great investment."),
                             "Exscientia plc")

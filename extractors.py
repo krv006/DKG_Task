@@ -11,7 +11,21 @@ COUNTRIES = {
     "switzerland": "Switzerland", "netherlands": "Netherlands", "australia": "Australia",
     "israel": "Israel", "finland": "Finland", "sweden": "Sweden", "denmark": "Denmark",
     "japan": "Japan", "china": "China", "singapore": "Singapore", "ireland": "Ireland",
-    "hong kong": "Hong Kong",
+    "hong kong": "Hong Kong", "italy": "Italy", "belgium": "Belgium",
+    "austria": "Austria", "norway": "Norway", "india": "India",
+}
+
+# unmistakable HQ cities only -- Cambridge (UK/US) deliberately absent
+HQ_CITIES = {
+    "massy": "France", "paris": "France", "toronto": "Canada",
+    "london": "United Kingdom", "st. gallen": "Switzerland",
+    "st gallen": "Switzerland", "barcelona": "Spain",
+    "berkeley": "United States", "new york": "United States",
+    "boston": "United States", "palo alto": "United States",
+    "san francisco": "United States", "amsterdam": "Netherlands",
+    "tokyo": "Japan", "tel aviv": "Israel", "helsinki": "Finland",
+    "espoo": "Finland", "stockholm": "Sweden", "copenhagen": "Denmark",
+    "munich": "Germany", "berlin": "Germany",
 }
 
 ISO2 = {
@@ -23,9 +37,15 @@ ISO2 = {
 
 YEAR_PATTERNS = [
     re.compile(r"\bfounded\s+(?:in\s+)?((?:19|20)\d{2})", re.I),
+    # "founded in Berkeley, California, in 2013" -- year after an interlude
+    re.compile(r"\bfounded[^.\n]{0,60}?\bin\s+((?:19|20)\d{2})", re.I),
+    # "In 2019, Pasqal was founded ..."
+    re.compile(r"\bin\s+((?:19|20)\d{2})[^.\n]{0,60}?\bfounded\b", re.I),
     re.compile(r"\bestablished\s+(?:in\s+)?((?:19|20)\d{2})", re.I),
+    re.compile(r"\best\.?\s+((?:19|20)\d{2})\b", re.I),
     re.compile(r"\bsince\s+((?:19|20)\d{2})", re.I),
     re.compile(r"\bstarted\s+in\s+((?:19|20)\d{2})", re.I),
+    re.compile(r"\bcreated\s+in\s+((?:19|20)\d{2})", re.I),
 ]
 
 
@@ -45,7 +65,7 @@ def _jsonld_items(page: Page):
                         yield sub
 
 
-def name_matches(page: Page, org_name: str) -> bool:
+def name_matches(page: Page, org_name: str, domain: str = "") -> bool:
     """Cheap sanity check that we are on the right company's site at all.
     Guards against parked/resold domains and seed rows with a wrong domain."""
     stop = {"inc", "ltd", "llc", "corp", "gmbh", "sas", "ab", "bv", "plc", "ag", "sl",
@@ -54,7 +74,12 @@ def name_matches(page: Page, org_name: str) -> bool:
     if not tokens:
         return True  # nothing distinctive to check against, don't block
     text = (page.title + " " + page.body_text).lower()
-    return any(t in text for t in tokens)
+    if any(t in text for t in tokens):
+        return True
+    # short brand names ("Ro") produce no usable tokens above; accept the
+    # domain label as a whole word instead ("ro" in "Ro | Telehealth ...")
+    label = domain.lower().removeprefix("www.").split(".")[0]
+    return bool(label) and re.search(rf"\b{re.escape(label)}\b", text) is not None
 
 
 def extract_founded_year(page: Page):
@@ -91,16 +116,41 @@ def extract_hq_country(page: Page):
                     resolved = ISO2.get(c.upper()) or COUNTRIES.get(c.lower()) or c
                     return resolved, "jsonld", "addressCountry in structured data"
 
-    # fall back to the footer only -- an about page body mentioning
-    # "offices in France, Germany and Japan" must not become the HQ
-    if page.footer_text:
-        text = page.footer_text.lower()
+    # fall back to the footer -- an about page body mentioning
+    # "offices in France, Germany and Japan" must not become the HQ.
+    # Sites without a <footer> element get the bottom of the page instead,
+    # which is where the address block lives in practice.
+    footer = page.footer_text or page.body_text[-600:]
+    src = "footer" if page.footer_text else "page-bottom"
+    if footer.strip():
+        text = footer.lower()
         hits = {canon for key, canon in COUNTRIES.items()
                 if re.search(rf"\b{re.escape(key)}\b", text)}
         if len(hits) == 1:
-            return hits.pop(), "footer", "single country name in page footer"
+            return hits.pop(), src, f"single country name in {src}"
         if len(hits) > 1:
-            return None, "footer", f"footer mentions {sorted(hits)}, ambiguous"
+            return None, src, f"{src} mentions {sorted(hits)}, ambiguous"
+        # no country spelled out; an unmistakable HQ city is the next best thing
+        cities = {canon for city, canon in HQ_CITIES.items()
+                  if re.search(rf"\b{re.escape(city)}\b", text)}
+        if len(cities) == 1:
+            return cities.pop(), src, f"single known HQ city in {src}"
+
+    # an explicit HQ claim in the body copy is trustworthy even outside the footer
+    claims = set()
+    for chunk in re.findall(r"\b(?:headquartered|based)\s+in\s+([A-Za-z][A-Za-z .,-]{2,40})",
+                            page.body_text, re.I):
+        low = chunk.lower()
+        for key, canon in COUNTRIES.items():
+            if re.search(rf"\b{re.escape(key)}\b", low):
+                claims.add(canon)
+        for city, canon in HQ_CITIES.items():
+            if re.search(rf"\b{re.escape(city)}\b", low):
+                claims.add(canon)
+    if len(claims) == 1:
+        return claims.pop(), "body-statement", "'headquartered in ...' claim in body copy"
+    if len(claims) > 1:
+        return None, "body-statement", f"conflicting HQ claims {sorted(claims)}, ambiguous"
     return None, None, "no unambiguous country signal on page"
 
 

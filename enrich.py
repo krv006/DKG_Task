@@ -39,7 +39,12 @@ PICKS = {
 }
 
 POLITE_DELAY = 1.0   # seconds between orgs; we are hitting company sites, not an API
-MAX_URLS_PER_ORG = 5 # bounded politeness beats coverage at this scale
+MAX_URLS_PER_ORG = 7 # bounded politeness beats coverage at this scale
+
+# last-resort source when the live site is walled off or resold: the Wayback
+# Machine copy of the org's own pages. Still first-party content; the
+# provenance URL points at the snapshot so a reviewer can see what was read.
+WAYBACK_YEAR = 2024  # roughly when the seed data was current
 
 FIELDS = ("founded_year", "hq_country", "description")
 
@@ -59,8 +64,9 @@ def candidate_urls(row):
     urls = []
     if row["source_url"]:
         urls.append(row["source_url"])
-    # common about-page spellings; terraquantum.swiss 404s /about but serves /company
-    for path in ("", "about", "about-us", "company"):
+    # common about-page spellings; terraquantum.swiss 404s /about but serves
+    # /company, and the contact page is where the HQ address usually lives
+    for path in ("", "about", "about-us", "company", "contact"):
         u = f"https://{row['domain']}/{path}" if path else f"https://{row['domain']}/"
         if u not in urls:
             urls.append(u)
@@ -68,6 +74,33 @@ def candidate_urls(row):
     if not row["domain"].startswith("www."):
         urls.append(f"https://www.{row['domain']}/")
     return urls[:MAX_URLS_PER_ORG]
+
+
+def wayback_urls(row):
+    return [f"https://web.archive.org/web/{WAYBACK_YEAR}/https://{row['domain']}/{path}"
+            for path in ("", "about")]
+
+
+def is_complete(out):
+    return all(out[k] and out[k]["value"] is not None for k in FIELDS)
+
+
+def try_url(out, row, url, session):
+    result = fetch(url, session)
+    entry = {"url": url, "status": result.status, "note": result.note}
+    out["fetch_log"].append(entry)
+    if result.status not in ("ok", "ok_rendered"):
+        return
+
+    if not name_matches(result.page, row["organization_name"], row["domain"]):
+        entry["note"] = "page loads but org name not on it -- wrong or resold domain, not trusting"
+        return
+
+    for key in FIELDS:
+        if out[key] and out[key]["value"] is not None:
+            continue  # already have it from an earlier page
+        value, method, note = EXTRACTORS[key](result.page)
+        out[key] = field(value, result.url, result.retrieved_at, method, note)
 
 
 def enrich_one(row, session):
@@ -83,23 +116,17 @@ def enrich_one(row, session):
     }
 
     for url in candidate_urls(row):
-        if all(out[k] and out[k]["value"] is not None for k in FIELDS):
+        if is_complete(out):
             break  # no reason to hit more pages
+        try_url(out, row, url, session)
 
-        result = fetch(url, session)
-        out["fetch_log"].append({"url": url, "status": result.status, "note": result.note})
-        if result.status not in ("ok", "ok_rendered"):
-            continue
-
-        if not name_matches(result.page, row["organization_name"]):
-            out["fetch_log"][-1]["note"] = "page loads but org name not on it -- wrong or resold domain, not trusting"
-            continue
-
-        for key in FIELDS:
-            if out[key] and out[key]["value"] is not None:
-                continue  # already have it from an earlier page
-            value, method, note = EXTRACTORS[key](result.page)
-            out[key] = field(value, result.url, result.retrieved_at, method, note)
+    # still missing something? the org's own site said all it will say --
+    # ask the Wayback Machine for the same site before giving up
+    if not is_complete(out):
+        for url in wayback_urls(row):
+            if is_complete(out):
+                break
+            try_url(out, row, url, session)
 
     # rows where every fetch failed: record that explicitly instead of nulls with no story
     for key in FIELDS:

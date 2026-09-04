@@ -2,6 +2,8 @@
 import json
 import re
 
+from renderer import Page
+
 COUNTRIES = {
     "united states": "United States", "usa": "United States", "u.s.": "United States",
     "united kingdom": "United Kingdom", "uk": "United Kingdom", "england": "United Kingdom",
@@ -27,10 +29,10 @@ YEAR_PATTERNS = [
 ]
 
 
-def _jsonld_blocks(soup):
-    for tag in soup.find_all("script", type="application/ld+json"):
+def _jsonld_items(page: Page):
+    for raw in page.jsonld_raw:
         try:
-            data = json.loads(tag.string or "")
+            data = json.loads(raw or "")
         except (json.JSONDecodeError, TypeError):
             continue
         items = data if isinstance(data, list) else [data]
@@ -43,7 +45,7 @@ def _jsonld_blocks(soup):
                         yield sub
 
 
-def name_matches(soup, org_name: str) -> bool:
+def name_matches(page: Page, org_name: str) -> bool:
     """Cheap sanity check that we are on the right company's site at all.
     Guards against parked/resold domains and seed rows with a wrong domain."""
     stop = {"inc", "ltd", "llc", "corp", "gmbh", "sas", "ab", "bv", "plc", "ag", "sl",
@@ -51,22 +53,21 @@ def name_matches(soup, org_name: str) -> bool:
     tokens = [t for t in re.split(r"[^a-z0-9]+", org_name.lower()) if len(t) > 2 and t not in stop]
     if not tokens:
         return True  # nothing distinctive to check against, don't block
-    text = soup.get_text(" ", strip=True).lower()
+    text = (page.title + " " + page.body_text).lower()
     return any(t in text for t in tokens)
 
 
-def extract_founded_year(soup):
-    for item in _jsonld_blocks(soup):
+def extract_founded_year(page: Page):
+    for item in _jsonld_items(page):
         fd = item.get("foundingDate")
         if fd:
             m = re.match(r"((?:19|20)\d{2})", str(fd))
             if m:
                 return int(m.group(1)), "jsonld", "foundingDate in structured data"
 
-    text = soup.get_text(" ", strip=True)
     years = set()
     for pat in YEAR_PATTERNS:
-        years.update(int(y) for y in pat.findall(text))
+        years.update(int(y) for y in pat.findall(page.body_text))
     years = {y for y in years if 1900 <= y <= 2026}
 
     if len(years) == 1:
@@ -76,8 +77,8 @@ def extract_founded_year(soup):
     return None, None, "no founding year found on page"
 
 
-def extract_hq_country(soup):
-    for item in _jsonld_blocks(soup):
+def extract_hq_country(page: Page):
+    for item in _jsonld_items(page):
         addr = item.get("address")
         addrs = addr if isinstance(addr, list) else [addr]
         for a in addrs:
@@ -92,9 +93,8 @@ def extract_hq_country(soup):
 
     # fall back to the footer only -- an about page body mentioning
     # "offices in France, Germany and Japan" must not become the HQ
-    footer = soup.find("footer")
-    if footer:
-        text = footer.get_text(" ", strip=True).lower()
+    if page.footer_text:
+        text = page.footer_text.lower()
         hits = {canon for key, canon in COUNTRIES.items()
                 if re.search(rf"\b{re.escape(key)}\b", text)}
         if len(hits) == 1:
@@ -104,15 +104,14 @@ def extract_hq_country(soup):
     return None, None, "no unambiguous country signal on page"
 
 
-def extract_description(soup):
-    for attrs in ({"property": "og:description"}, {"name": "description"}):
-        tag = soup.find("meta", attrs=attrs)
-        if tag and tag.get("content"):
-            desc = tag["content"].strip()
+def extract_description(page: Page):
+    for content, src in ((page.og_description, "og:description"),
+                         (page.meta_description, "meta description")):
+        desc = (content or "").strip()
+        if desc:
             # meta descriptions are self-written marketing but at least they
             # are about the right company; cut to the first sentence
             first = re.split(r"(?<=[.!?])\s+", desc)[0].strip()
             if len(first) >= 40:
-                src = "og:description" if "property" in attrs else "meta description"
                 return first, src, None
     return None, None, "no usable meta description (would need main-copy heuristics or an LLM)"

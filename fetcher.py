@@ -1,11 +1,13 @@
-"""HTTP layer. Every failure mode ends up as a FetchResult with a status,
-so the caller never has to catch anything itself.
+"""Transport layer. requests does the status-code preflight (a browser
+cannot see a 429 or a 404), then renderer.py loads the page in headless
+Chrome and harvests the DOM. Every failure mode ends up as a FetchResult
+with a status, so the caller never has to catch anything itself.
 
 Statuses:
-    ok            - 200 with a body that looks like a real page
-    ok_rendered   - 200 was a JS shell, recovered by rendering in headless Chrome
-    empty_page    - 200 with nothing useful even after rendering (parked domain etc.)
-    http_error    - 4xx that is not worth retrying (404, 403, ...)
+    ok            - 200 and the browser got a page with real text in it
+    ok_rendered   - plain HTTP was refused (403 bot wall) but a real browser got through
+    empty_page    - 200 but nothing useful even after rendering (parked domain etc.)
+    http_error    - 4xx that is not worth retrying (404, 410, ...)
     rate_limited  - 429 that survived all retries
     network_error - timeout / DNS / connection failure after retries
 """
@@ -15,14 +17,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
-from bs4 import BeautifulSoup
 
 import renderer
+from renderer import Page
 
 TIMEOUT = 8          # seconds; slow corporate sites exist but 8s catches most
 MAX_RETRIES = 3
 BACKOFF_BASE = 2     # 2s, 4s, 8s
-MIN_TEXT_CHARS = 400 # below this a 200 is probably a JS shell or a parked page
+MIN_TEXT_CHARS = 400 # below this a rendered page is probably parked or an error shell
 
 HEADERS = {
     # honest UA; some sites 403 the default python-requests one
@@ -35,13 +37,23 @@ class FetchResult:
     url: str
     status: str
     retrieved_at: str
-    html: str = ""
-    soup: BeautifulSoup = None
+    page: Page = None
     note: str = ""
 
 
 def _now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_in_browser(url, status, extra_note=""):
+    page, note = renderer.load(url)
+    if page is None:
+        return FetchResult(url, "empty_page", _now(), note=f"{extra_note}{note}")
+    if len(page.body_text) < MIN_TEXT_CHARS:
+        return FetchResult(url, "empty_page", _now(), page,
+                           note=f"{extra_note}rendered but only "
+                                f"{len(page.body_text)} chars of text (parked or error shell?)")
+    return FetchResult(page.url, status, _now(), page, note=extra_note.strip(" ;"))
 
 
 def fetch(url: str, session: requests.Session) -> FetchResult:
@@ -73,26 +85,20 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
             time.sleep(BACKOFF_BASE ** attempt)
             continue
 
+        if resp.status_code == 403:
+            # bot walls 403 plain HTTP clients but often let a real browser in
+            result = _load_in_browser(url, "ok_rendered",
+                                      "403 over plain HTTP, retried in a real browser; ")
+            if result.status == "ok_rendered":
+                return result
+            return FetchResult(url, "http_error", _now(),
+                               note="HTTP 403 and the browser did not get through either")
+
         if resp.status_code != 200:
-            # 404/403/410: retrying will not change the answer
+            # 404/410: retrying will not change the answer
             return FetchResult(url, "http_error", _now(), note=f"HTTP {resp.status_code}")
 
-        # parse from bytes: requests guesses ISO-8859-1 when the header has no
-        # charset, which mangled UTF-8 quotes; bs4 reads the <meta charset> itself
-        soup = BeautifulSoup(resp.content, "html.parser")
-        visible = soup.get_text(" ", strip=True)
-        if len(visible) < MIN_TEXT_CHARS:
-            # a 200 with no text is usually a JS-only site; give the browser one shot
-            html, note = renderer.render(str(resp.url))
-            if html:
-                soup = BeautifulSoup(html, "html.parser")
-                if len(soup.get_text(" ", strip=True)) >= MIN_TEXT_CHARS:
-                    return FetchResult(str(resp.url), "ok_rendered", _now(), html, soup, note=note)
-            return FetchResult(url, "empty_page", _now(), resp.text, soup,
-                               note=f"200 but only {len(visible)} chars of text, "
-                                    f"rendering did not help ({note})")
-
-        return FetchResult(str(resp.url), "ok", _now(), resp.text, soup)
+        return _load_in_browser(str(resp.url), "ok")
 
     status = "rate_limited" if "429" in last_note else "network_error"
     return FetchResult(url, status, _now(), note=f"gave up after {MAX_RETRIES} attempts: {last_note}")

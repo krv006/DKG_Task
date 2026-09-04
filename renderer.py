@@ -1,25 +1,51 @@
-"""Selenium fallback for pages that come back as a JS shell over plain HTTP.
+"""Browser layer. Selenium loads every page and harvests the DOM after the
+JS has run, so SPA sites (xanadu.ai, ceracare.co.uk) parse the same as
+static ones. The one thing a browser cannot see is the HTTP status code --
+that stays fetcher.py's job.
 
-Deliberately second in line, not first: a headless browser is ~10x slower
-per page and hides HTTP status codes (no way to see a 429 or a 404 from
-Selenium), so requests stays the primary transport and this only runs when
-a 200 arrived with nothing useful in it.
+Extraction never touches the driver directly: load() harvests everything
+extractors need into a plain Page object in one execute_script call, which
+keeps the extractors pure functions and testable without a browser.
 """
 
 import time
+from dataclasses import dataclass, field
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
-PAGE_LOAD_TIMEOUT = 15  # rendering budget per page; JS-heavy sites need more than plain HTTP
+PAGE_LOAD_TIMEOUT = 15  # seconds per page before we give up on the load event
 HYDRATION_WAIT = 8      # extra budget for the JS to actually fill the DOM
 HYDRATION_MIN_CHARS = 400
+
+_HARVEST_JS = """
+return {
+  title:  document.title || "",
+  body:   document.body ? document.body.innerText : "",
+  footer: (function(f){ return f ? f.innerText : ""; })(document.querySelector("footer")),
+  jsonld: Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+               .map(function(s){ return s.textContent; }),
+  og:     (function(m){ return m ? m.content : ""; })(document.querySelector('meta[property="og:description"]')),
+  meta:   (function(m){ return m ? m.content : ""; })(document.querySelector('meta[name="description"]')),
+};
+"""
 
 _driver = None
 
 
+@dataclass
+class Page:
+    url: str = ""
+    title: str = ""
+    body_text: str = ""
+    footer_text: str = ""
+    jsonld_raw: list = field(default_factory=list)
+    og_description: str = ""
+    meta_description: str = ""
+
+
 def _get_driver():
-    # lazy singleton: starting Chrome costs ~2s, most runs never need it
+    # lazy singleton: starting Chrome costs ~2s, do it once per run
     global _driver
     if _driver is None:
         opts = webdriver.ChromeOptions()
@@ -31,8 +57,8 @@ def _get_driver():
     return _driver
 
 
-def render(url: str):
-    """Returns (html, note). html=None means rendering failed too."""
+def load(url: str):
+    """Returns (Page or None, note). None means the browser failed too."""
     try:
         driver = _get_driver()
     except WebDriverException as e:
@@ -41,27 +67,38 @@ def render(url: str):
     try:
         driver.get(url)
     except TimeoutException:
-        # keep whatever did load; partial DOM often already has the meta tags
+        # keep whatever did load; a partial DOM often already has the meta tags
         pass
     except WebDriverException as e:
-        return None, f"render failed: {type(e).__name__}"
+        return None, f"browser load failed: {type(e).__name__}"
 
     # driver.get returns on document load, which for an SPA is before the JS
     # has painted anything -- poll until the body has real text in it
     deadline = time.time() + HYDRATION_WAIT
     while time.time() < deadline:
         try:
-            chars = driver.execute_script("return document.body.innerText.length")
+            chars = driver.execute_script("return document.body ? document.body.innerText.length : 0")
         except WebDriverException:
             chars = 0
         if chars >= HYDRATION_MIN_CHARS:
             break
         time.sleep(0.5)
 
-    html = driver.page_source or ""
-    if len(html) < 200:
-        return None, "rendered but page source still empty"
-    return html, "rendered with headless Chrome (plain HTTP returned a JS shell)"
+    try:
+        data = driver.execute_script(_HARVEST_JS)
+    except WebDriverException as e:
+        return None, f"DOM harvest failed: {type(e).__name__}"
+
+    page = Page(
+        url=driver.current_url or url,
+        title=data.get("title", ""),
+        body_text=data.get("body", ""),
+        footer_text=data.get("footer", ""),
+        jsonld_raw=data.get("jsonld", []) or [],
+        og_description=data.get("og", ""),
+        meta_description=data.get("meta", ""),
+    )
+    return page, ""
 
 
 def shutdown():

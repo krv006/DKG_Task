@@ -3,7 +3,8 @@ so the caller never has to catch anything itself.
 
 Statuses:
     ok            - 200 with a body that looks like a real page
-    empty_page    - 200 but nothing useful in it (JS shell, parked domain, tiny body)
+    ok_rendered   - 200 was a JS shell, recovered by rendering in headless Chrome
+    empty_page    - 200 with nothing useful even after rendering (parked domain etc.)
     http_error    - 4xx that is not worth retrying (404, 403, ...)
     rate_limited  - 429 that survived all retries
     network_error - timeout / DNS / connection failure after retries
@@ -15,6 +16,8 @@ from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
+
+import renderer
 
 TIMEOUT = 8          # seconds; slow corporate sites exist but 8s catches most
 MAX_RETRIES = 3
@@ -77,8 +80,15 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
         soup = BeautifulSoup(resp.text, "html.parser")
         visible = soup.get_text(" ", strip=True)
         if len(visible) < MIN_TEXT_CHARS:
+            # a 200 with no text is usually a JS-only site; give the browser one shot
+            html, note = renderer.render(str(resp.url))
+            if html:
+                soup = BeautifulSoup(html, "html.parser")
+                if len(soup.get_text(" ", strip=True)) >= MIN_TEXT_CHARS:
+                    return FetchResult(str(resp.url), "ok_rendered", _now(), html, soup, note=note)
             return FetchResult(url, "empty_page", _now(), resp.text, soup,
-                               note=f"200 but only {len(visible)} chars of text (JS-only or parked?)")
+                               note=f"200 but only {len(visible)} chars of text, "
+                                    f"rendering did not help ({note})")
 
         return FetchResult(str(resp.url), "ok", _now(), resp.text, soup)
 

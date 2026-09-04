@@ -12,6 +12,7 @@ import time
 
 import requests
 
+import renderer
 from fetcher import fetch
 from extractors import (extract_description, extract_founded_year,
                         extract_hq_country, name_matches)
@@ -71,7 +72,7 @@ def enrich_one(row, session):
     for url in candidate_urls(row):
         result = fetch(url, session)
         out["fetch_log"].append({"url": url, "status": result.status, "note": result.note})
-        if result.status != "ok":
+        if result.status not in ("ok", "ok_rendered"):
             continue
 
         if not name_matches(result.soup, row["organization_name"]):
@@ -104,14 +105,17 @@ def main():
 
     session = requests.Session()
     enriched = []
-    for row in rows:
-        print(f"{row['record_id']}  {row['organization_name']}")
-        rec = enrich_one(row, session)
-        for k in ("founded_year", "hq_country", "description"):
-            v = rec[k]["value"]
-            print(f"    {k}: {v if v is not None else '-- (' + str(rec[k]['note']) + ')'}")
-        enriched.append(rec)
-        time.sleep(POLITE_DELAY)
+    try:
+        for row in rows:
+            print(f"{row['record_id']}  {row['organization_name']}")
+            rec = enrich_one(row, session)
+            for k in ("founded_year", "hq_country", "description"):
+                v = rec[k]["value"]
+                print(f"    {k}: {v if v is not None else '-- (' + str(rec[k]['note']) + ')'}")
+            enriched.append(rec)
+            time.sleep(POLITE_DELAY)
+    finally:
+        renderer.shutdown()
 
     with open(OUT, "w", encoding="utf-8") as f:
         for rec in enriched:

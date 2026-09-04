@@ -39,7 +39,8 @@ each output record (`why_picked`).
   pipeline whenever it was unsure — Massy, Espoo, Stockholm, St. Gallen rows all say US.
 - Several `founded_year` values (2024/2025 for companies founded ~2013) look like
   a "year first seen" leaking into "year founded".
-- `benevolent.com` is probably the wrong domain entirely (SSL failure; they were on .ai).
+- `benevolent.com` only serves on the `www.` host — the apex domain fails TLS.
+  The www-fallback candidate URL recovered it.
 - `exscientia.ai` still resolves but the page no longer mentions Exscientia
   (acquired by Recursion) — the name-on-page check refused it.
 
@@ -48,9 +49,13 @@ each output record (`why_picked`).
 Null + note instead of a guess whenever: the page gave two different founding
 years (Rigetti mentions 2003 and 2005), the footer named more than one country,
 the org's name did not appear on the fetched page (resold/changed domain), or
-nothing could be fetched at all (Ro is behind a 403 bot wall). 12 records were
-fetched; 8 got at least one trusted field, 3 got nothing, and I consider all
-of those correct outcomes, not failures.
+nothing could be fetched at all. 12 records were fetched; 10 got at least one
+trusted field and 2 got nothing: Exscientia (the domain now serves Recursion
+content, so the name check refused it) and Ro (403 from plain HTTP *and* from
+a real browser — a bot wall that would need residential proxies to pass, which
+is out of scope). Stray 404s on guessed about-page paths (e.g. Terra Quantum's
+`/about`) are routed around by trying `/company` and the homepage instead. I
+consider all of these correct outcomes, not failures.
 
 ## What I deliberately did not do
 

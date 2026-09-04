@@ -11,9 +11,9 @@ CSV output). It enriches 12 deliberately chosen records from
 `data/seed_organizations.csv` with founding year, HQ country and a one-line
 description, each field carrying its own `source_url` / `retrieved_at` /
 `method` / `note` columns. Output: `output/enriched_organizations_<run
-date>.csv`. Run with `python enrich.py` (needs `requests`, `selenium` +
-Chrome); `python test_extractors.py` runs the extraction-rule tests (no
-browser needed -- extractors are pure).
+date>.csv`. Run with `pip install -r requirements.txt` (plus an installed
+Chrome) and `python enrich.py`; `python test_extractors.py` runs the
+extraction-rule tests (no browser needed -- extractors are pure).
 
 Failure handling is in `fetcher.py`: timeouts and 5xx retry with backoff, 429
 honours `Retry-After` (capped at 30s), 404 is not retried, a 403 gets one

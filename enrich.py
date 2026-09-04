@@ -30,6 +30,7 @@ PICKS = {
 POLITE_DELAY = 1.0
 MAX_URLS_PER_ORG = 7
 WAYBACK_YEAR = 2024
+WAYBACK_TIMEOUT = 30
 
 FIELDS = ("founded_year", "hq_country", "description")
 
@@ -68,7 +69,10 @@ def is_complete(out):
 
 
 def try_url(out, row, url, session):
-    result = fetch(url, session)
+    if url.startswith("https://web.archive.org/"):
+        result = fetch(url, session, timeout=WAYBACK_TIMEOUT)
+    else:
+        result = fetch(url, session)
     entry = {"url": url, "status": result.status, "note": result.note}
     out["fetch_log"].append(entry)
     if result.status not in ("ok", "ok_rendered"):

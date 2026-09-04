@@ -41,13 +41,13 @@ def _load_in_browser(url, status, extra_note=""):
     return FetchResult(page.url, status, _now(), page, note=extra_note.strip(" ;"))
 
 
-def fetch(url: str, session: requests.Session) -> FetchResult:
+def fetch(url: str, session: requests.Session, timeout: int = TIMEOUT) -> FetchResult:
     last_note = ""
     for attempt in range(MAX_RETRIES):
         try:
-            resp = session.get(url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
+            resp = session.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         except requests.Timeout:
-            last_note = f"timeout after {TIMEOUT}s (attempt {attempt + 1})"
+            last_note = f"timeout after {timeout}s (attempt {attempt + 1})"
             time.sleep(BACKOFF_BASE ** attempt)
             continue
         except requests.RequestException as e:

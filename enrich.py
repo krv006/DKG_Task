@@ -9,6 +9,7 @@ Out:  output/enriched_organizations.jsonl  (one record per line,
 import csv
 import json
 import time
+from datetime import date
 
 import requests
 
@@ -18,7 +19,7 @@ from extractors import (extract_description, extract_founded_year,
                         extract_hq_country, name_matches)
 
 SEED = "data/seed_organizations.csv"
-OUT = "output/enriched_organizations.jsonl"
+OUT = f"output/enriched_organizations_{date.today().isoformat()}.jsonl"
 
 # Not a random 12. Picked to cover the failure modes I saw in the seed:
 # the six empty rows (highest value per fetch), two duplicate pairs whose

@@ -6,10 +6,14 @@ Selenium), so requests stays the primary transport and this only runs when
 a 200 arrived with nothing useful in it.
 """
 
+import time
+
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 PAGE_LOAD_TIMEOUT = 15  # rendering budget per page; JS-heavy sites need more than plain HTTP
+HYDRATION_WAIT = 8      # extra budget for the JS to actually fill the DOM
+HYDRATION_MIN_CHARS = 400
 
 _driver = None
 
@@ -41,6 +45,18 @@ def render(url: str):
         pass
     except WebDriverException as e:
         return None, f"render failed: {type(e).__name__}"
+
+    # driver.get returns on document load, which for an SPA is before the JS
+    # has painted anything -- poll until the body has real text in it
+    deadline = time.time() + HYDRATION_WAIT
+    while time.time() < deadline:
+        try:
+            chars = driver.execute_script("return document.body.innerText.length")
+        except WebDriverException:
+            chars = 0
+        if chars >= HYDRATION_MIN_CHARS:
+            break
+        time.sleep(0.5)
 
     html = driver.page_source or ""
     if len(html) < 200:

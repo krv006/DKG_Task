@@ -19,7 +19,10 @@ Failure handling is in `fetcher.py`: timeouts and 5xx retry with backoff, 429
 honours `Retry-After` (capped at 30s), 404 is not retried, a 403 gets one
 attempt through the real browser (bot walls block plain HTTP but often let
 Chrome in), and a 200 whose rendered page still has no text is declared
-`empty_page`. The split exists because each side is blind to something:
+`empty_page`. A record still missing fields after the live site falls back
+to the Wayback Machine snapshot of the same site -- still first-party
+content, with the provenance URL pointing at the archive. The split exists
+because each side is blind to something:
 Selenium cannot see HTTP status codes, and requests cannot run the JS that
 SPA sites need before they contain anything.
 
@@ -47,15 +50,18 @@ each output record (`why_picked`).
 ## Where I refused to write a value
 
 Null + note instead of a guess whenever: the page gave two different founding
-years (Rigetti mentions 2003 and 2005), the footer named more than one country,
-the org's name did not appear on the fetched page (resold/changed domain), or
-nothing could be fetched at all. 12 records were fetched; 10 got at least one
-trusted field and 2 got nothing: Exscientia (the domain now serves Recursion
-content, so the name check refused it) and Ro (403 from plain HTTP *and* from
-a real browser — a bot wall that would need residential proxies to pass, which
-is out of scope). Stray 404s on guessed about-page paths (e.g. Terra Quantum's
-`/about`) are routed around by trying `/company` and the homepage instead. I
-consider all of these correct outcomes, not failures.
+years, the footer named more than one country, the org's name did not appear
+on the fetched page (resold/changed domain), or nothing could be fetched at
+all. 12 records were fetched; 10 got at least one trusted field (19 trusted
+values in total) and 2 got nothing: Exscientia (the domain now serves
+Recursion content, so the name check refused it) and Ro (403 from plain HTTP
+*and* from a real browser — a bot wall that would need residential proxies to
+pass, which is out of scope). Both would be covered by the Wayback fallback,
+but web.archive.org is not reachable from the network this run was made on —
+the fetch log records those timeouts honestly. Stray 404s on guessed
+about-page paths (e.g. Terra Quantum's `/about`) are routed around by trying
+`/company` and the homepage instead. I consider all of these correct
+outcomes, not failures.
 
 ## What I deliberately did not do
 

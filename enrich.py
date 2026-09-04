@@ -2,12 +2,11 @@
 HQ country and a one-line description, from the org's own website.
 
 Run:  python enrich.py
-Out:  output/enriched_organizations.jsonl  (one record per line,
-      every field carries its own source_url + retrieved_at)
+Out:  output/enriched_organizations_<today>.csv -- flat CSV, every field
+      carries its own source_url / retrieved_at / method / note columns
 """
 
 import csv
-import json
 import time
 from datetime import date
 
@@ -19,7 +18,7 @@ from extractors import (extract_description, extract_founded_year,
                         extract_hq_country, name_matches)
 
 SEED = "data/seed_organizations.csv"
-OUT = f"output/enriched_organizations_{date.today().isoformat()}.jsonl"
+OUT = f"output/enriched_organizations_{date.today().isoformat()}.csv"
 
 # Not a random 12. Picked to cover the failure modes I saw in the seed:
 # the six empty rows (highest value per fetch), two duplicate pairs whose
@@ -39,7 +38,16 @@ PICKS = {
     "ORG-0015": "hq_country 'United States' but St. Gallen + .swiss domain say Switzerland",
 }
 
-POLITE_DELAY = 1.0  # seconds between orgs; we are hitting company sites, not an API
+POLITE_DELAY = 1.0   # seconds between orgs; we are hitting company sites, not an API
+MAX_URLS_PER_ORG = 5 # bounded politeness beats coverage at this scale
+
+FIELDS = ("founded_year", "hq_country", "description")
+
+EXTRACTORS = {
+    "founded_year": extract_founded_year,
+    "hq_country": extract_hq_country,
+    "description": extract_description,
+}
 
 
 def field(value, source_url, retrieved_at, method, note):
@@ -51,11 +59,15 @@ def candidate_urls(row):
     urls = []
     if row["source_url"]:
         urls.append(row["source_url"])
-    home = f"https://{row['domain']}/"
-    if home not in urls:
-        urls.append(home)
-    urls.append(f"https://{row['domain']}/about")
-    return urls
+    # common about-page spellings; terraquantum.swiss 404s /about but serves /company
+    for path in ("", "about", "about-us", "company"):
+        u = f"https://{row['domain']}/{path}" if path else f"https://{row['domain']}/"
+        if u not in urls:
+            urls.append(u)
+    # apex domains with broken TLS sometimes only serve the www host
+    if not row["domain"].startswith("www."):
+        urls.append(f"https://www.{row['domain']}/")
+    return urls[:MAX_URLS_PER_ORG]
 
 
 def enrich_one(row, session):
@@ -71,32 +83,44 @@ def enrich_one(row, session):
     }
 
     for url in candidate_urls(row):
+        if all(out[k] and out[k]["value"] is not None for k in FIELDS):
+            break  # no reason to hit more pages
+
         result = fetch(url, session)
         out["fetch_log"].append({"url": url, "status": result.status, "note": result.note})
         if result.status not in ("ok", "ok_rendered"):
             continue
 
-        if not name_matches(result.soup, row["organization_name"]):
+        if not name_matches(result.page, row["organization_name"]):
             out["fetch_log"][-1]["note"] = "page loads but org name not on it -- wrong or resold domain, not trusting"
             continue
 
-        for key, extractor in (("founded_year", extract_founded_year),
-                               ("hq_country", extract_hq_country),
-                               ("description", extract_description)):
+        for key in FIELDS:
             if out[key] and out[key]["value"] is not None:
                 continue  # already have it from an earlier page
-            value, method, note = extractor(result.soup)
+            value, method, note = EXTRACTORS[key](result.page)
             out[key] = field(value, result.url, result.retrieved_at, method, note)
 
-        if all(out[k] and out[k]["value"] is not None
-               for k in ("founded_year", "hq_country", "description")):
-            break  # no reason to hit more pages
-
     # rows where every fetch failed: record that explicitly instead of nulls with no story
-    for key in ("founded_year", "hq_country", "description"):
+    for key in FIELDS:
         if out[key] is None:
             out[key] = field(None, None, None, None, "no page could be fetched and trusted")
     return out
+
+
+def to_csv_row(rec):
+    row = {k: rec[k] for k in ("record_id", "organization_name", "domain", "why_picked")}
+    for key in FIELDS:
+        f = rec[key]
+        row[key] = f["value"]
+        row[f"{key}_source_url"] = f["source_url"]
+        row[f"{key}_retrieved_at"] = f["retrieved_at"]
+        row[f"{key}_method"] = f["method"]
+        row[f"{key}_note"] = f["note"]
+    row["fetch_summary"] = "; ".join(
+        f"{e['url']} -> {e['status']}" + (f" ({e['note']})" if e["note"] else "")
+        for e in rec["fetch_log"])
+    return row
 
 
 def main():
@@ -108,20 +132,22 @@ def main():
     enriched = []
     try:
         for row in rows:
-            print(f"{row['record_id']}  {row['organization_name']}")
+            print(f"{row['record_id']}  {row['organization_name']}", flush=True)
             rec = enrich_one(row, session)
-            for k in ("founded_year", "hq_country", "description"):
+            for k in FIELDS:
                 v = rec[k]["value"]
-                print(f"    {k}: {v if v is not None else '-- (' + str(rec[k]['note']) + ')'}")
+                print(f"    {k}: {v if v is not None else '-- (' + str(rec[k]['note']) + ')'}", flush=True)
             enriched.append(rec)
             time.sleep(POLITE_DELAY)
     finally:
         renderer.shutdown()
 
-    with open(OUT, "w", encoding="utf-8") as f:
-        for rec in enriched:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"\nwrote {len(enriched)} records to {OUT}")
+    csv_rows = [to_csv_row(rec) for rec in enriched]
+    with open(OUT, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"\nwrote {len(csv_rows)} records to {OUT}")
 
 
 if __name__ == "__main__":

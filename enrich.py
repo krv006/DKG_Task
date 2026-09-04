@@ -1,11 +1,3 @@
-"""Enrich 12 records from seed_organizations.csv with founding year,
-HQ country and a one-line description, from the org's own website.
-
-Run:  python enrich.py
-Out:  output/enriched_organizations_<today>.csv -- flat CSV, every field
-      carries its own source_url / retrieved_at / method / note columns
-"""
-
 import csv
 import time
 from datetime import date
@@ -20,9 +12,6 @@ from extractors import (extract_description, extract_founded_year,
 SEED = "data/seed_organizations.csv"
 OUT = f"output/enriched_organizations_{date.today().isoformat()}.csv"
 
-# Not a random 12. Picked to cover the failure modes I saw in the seed:
-# the six empty rows (highest value per fetch), two duplicate pairs whose
-# copies contradict each other, and rows where the existing value looks wrong.
 PICKS = {
     "ORG-0049": "row is empty",
     "ORG-0050": "row is empty; company was acquired by Recursion, site may be gone",
@@ -38,13 +27,9 @@ PICKS = {
     "ORG-0015": "hq_country 'United States' but St. Gallen + .swiss domain say Switzerland",
 }
 
-POLITE_DELAY = 1.0   # seconds between orgs; we are hitting company sites, not an API
-MAX_URLS_PER_ORG = 7 # bounded politeness beats coverage at this scale
-
-# last-resort source when the live site is walled off or resold: the Wayback
-# Machine copy of the org's own pages. Still first-party content; the
-# provenance URL points at the snapshot so a reviewer can see what was read.
-WAYBACK_YEAR = 2024  # roughly when the seed data was current
+POLITE_DELAY = 1.0
+MAX_URLS_PER_ORG = 7
+WAYBACK_YEAR = 2024
 
 FIELDS = ("founded_year", "hq_country", "description")
 
@@ -64,13 +49,10 @@ def candidate_urls(row):
     urls = []
     if row["source_url"]:
         urls.append(row["source_url"])
-    # common about-page spellings; terraquantum.swiss 404s /about but serves
-    # /company, and the contact page is where the HQ address usually lives
     for path in ("", "about", "about-us", "company", "contact"):
         u = f"https://{row['domain']}/{path}" if path else f"https://{row['domain']}/"
         if u not in urls:
             urls.append(u)
-    # apex domains with broken TLS sometimes only serve the www host
     if not row["domain"].startswith("www."):
         urls.append(f"https://www.{row['domain']}/")
     return urls[:MAX_URLS_PER_ORG]
@@ -98,7 +80,7 @@ def try_url(out, row, url, session):
 
     for key in FIELDS:
         if out[key] and out[key]["value"] is not None:
-            continue  # already have it from an earlier page
+            continue
         value, method, note = EXTRACTORS[key](result.page)
         out[key] = field(value, result.url, result.retrieved_at, method, note)
 
@@ -117,18 +99,15 @@ def enrich_one(row, session):
 
     for url in candidate_urls(row):
         if is_complete(out):
-            break  # no reason to hit more pages
+            break
         try_url(out, row, url, session)
 
-    # still missing something? the org's own site said all it will say --
-    # ask the Wayback Machine for the same site before giving up
     if not is_complete(out):
         for url in wayback_urls(row):
             if is_complete(out):
                 break
             try_url(out, row, url, session)
 
-    # rows where every fetch failed: record that explicitly instead of nulls with no story
     for key in FIELDS:
         if out[key] is None:
             out[key] = field(None, None, None, None, "no page could be fetched and trusted")

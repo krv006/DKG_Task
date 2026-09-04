@@ -1,4 +1,3 @@
-
 import json
 import re
 
@@ -15,7 +14,6 @@ COUNTRIES = {
     "austria": "Austria", "norway": "Norway", "india": "India",
 }
 
-# unmistakable HQ cities only -- Cambridge (UK/US) deliberately absent
 HQ_CITIES = {
     "massy": "France", "paris": "France", "toronto": "Canada",
     "london": "United Kingdom", "st. gallen": "Switzerland",
@@ -37,9 +35,7 @@ ISO2 = {
 
 YEAR_PATTERNS = [
     re.compile(r"\bfounded\s+(?:in\s+)?((?:19|20)\d{2})", re.I),
-    # "founded in Berkeley, California, in 2013" -- year after an interlude
     re.compile(r"\bfounded[^.\n]{0,60}?\bin\s+((?:19|20)\d{2})", re.I),
-    # "In 2019, Pasqal was founded ..."
     re.compile(r"\bin\s+((?:19|20)\d{2})[^.\n]{0,60}?\bfounded\b", re.I),
     re.compile(r"\bestablished\s+(?:in\s+)?((?:19|20)\d{2})", re.I),
     re.compile(r"\best\.?\s+((?:19|20)\d{2})\b", re.I),
@@ -59,25 +55,20 @@ def _jsonld_items(page: Page):
         for item in items:
             if isinstance(item, dict):
                 yield item
-                # @graph nesting is common
                 for sub in item.get("@graph", []):
                     if isinstance(sub, dict):
                         yield sub
 
 
 def name_matches(page: Page, org_name: str, domain: str = "") -> bool:
-    """Cheap sanity check that we are on the right company's site at all.
-    Guards against parked/resold domains and seed rows with a wrong domain."""
     stop = {"inc", "ltd", "llc", "corp", "gmbh", "sas", "ab", "bv", "plc", "ag", "sl",
             "pty", "the", "and", "&", "health", "computing", "systems", "technologies"}
     tokens = [t for t in re.split(r"[^a-z0-9]+", org_name.lower()) if len(t) > 2 and t not in stop]
     if not tokens:
-        return True  # nothing distinctive to check against, don't block
+        return True
     text = (page.title + " " + page.body_text).lower()
     if any(t in text for t in tokens):
         return True
-    # short brand names ("Ro") produce no usable tokens above; accept the
-    # domain label as a whole word instead ("ro" in "Ro | Telehealth ...")
     label = domain.lower().removeprefix("www.").split(".")[0]
     return bool(label) and re.search(rf"\b{re.escape(label)}\b", text) is not None
 
@@ -116,10 +107,6 @@ def extract_hq_country(page: Page):
                     resolved = ISO2.get(c.upper()) or COUNTRIES.get(c.lower()) or c
                     return resolved, "jsonld", "addressCountry in structured data"
 
-    # fall back to the footer -- an about page body mentioning
-    # "offices in France, Germany and Japan" must not become the HQ.
-    # Sites without a <footer> element get the bottom of the page instead,
-    # which is where the address block lives in practice.
     footer = page.footer_text or page.body_text[-600:]
     src = "footer" if page.footer_text else "page-bottom"
     if footer.strip():
@@ -130,13 +117,11 @@ def extract_hq_country(page: Page):
             return hits.pop(), src, f"single country name in {src}"
         if len(hits) > 1:
             return None, src, f"{src} mentions {sorted(hits)}, ambiguous"
-        # no country spelled out; an unmistakable HQ city is the next best thing
         cities = {canon for city, canon in HQ_CITIES.items()
                   if re.search(rf"\b{re.escape(city)}\b", text)}
         if len(cities) == 1:
             return cities.pop(), src, f"single known HQ city in {src}"
 
-    # an explicit HQ claim in the body copy is trustworthy even outside the footer
     claims = set()
     for chunk in re.findall(r"\b(?:headquartered|based)\s+in\s+([A-Za-z][A-Za-z .,-]{2,40})",
                             page.body_text, re.I):
@@ -159,8 +144,6 @@ def extract_description(page: Page):
                          (page.meta_description, "meta description")):
         desc = (content or "").strip()
         if desc:
-            # meta descriptions are self-written marketing but at least they
-            # are about the right company; cut to the first sentence
             first = re.split(r"(?<=[.!?])\s+", desc)[0].strip()
             if len(first) >= 40:
                 return first, src, None

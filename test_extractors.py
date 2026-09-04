@@ -1,7 +1,3 @@
-"""Smoke tests for the extraction rules. Run: python test_extractors.py
-(no pytest dependency on purpose -- one file, plain asserts; Page objects
-are built by hand so no browser is needed)"""
-
 from renderer import Page
 from extractors import (extract_description, extract_founded_year,
                         extract_hq_country, name_matches)
@@ -55,7 +51,6 @@ def test_country_footer_two_countries_refuses():
 
 
 def test_country_body_mentions_do_not_count():
-    # only the footer is trusted; body copy about markets must not set HQ
     value, _, _ = extract_hq_country(Page(body_text="We sell in Japan and China."))
     assert value is None
 

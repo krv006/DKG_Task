@@ -1,17 +1,3 @@
-"""Transport layer. requests does the status-code preflight (a browser
-cannot see a 429 or a 404), then renderer.py loads the page in headless
-Chrome and harvests the DOM. Every failure mode ends up as a FetchResult
-with a status, so the caller never has to catch anything itself.
-
-Statuses:
-    ok            - 200 and the browser got a page with real text in it
-    ok_rendered   - plain HTTP was refused (403 bot wall) but a real browser got through
-    empty_page    - 200 but nothing useful even after rendering (parked domain etc.)
-    http_error    - 4xx that is not worth retrying (404, 410, ...)
-    rate_limited  - 429 that survived all retries
-    network_error - timeout / DNS / connection failure after retries
-"""
-
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,13 +7,12 @@ import requests
 import renderer
 from renderer import Page
 
-TIMEOUT = 8          # seconds; slow corporate sites exist but 8s catches most
+TIMEOUT = 8
 MAX_RETRIES = 3
-BACKOFF_BASE = 2     # 2s, 4s, 8s
-MIN_TEXT_CHARS = 400 # below this a rendered page is probably parked or an error shell
+BACKOFF_BASE = 2
+MIN_TEXT_CHARS = 400
 
 HEADERS = {
-    # honest UA; some sites 403 the default python-requests one
     "User-Agent": "Mozilla/5.0 (compatible; dkg-enrichment/0.1; research use)"
 }
 
@@ -66,15 +51,11 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
             time.sleep(BACKOFF_BASE ** attempt)
             continue
         except requests.RequestException as e:
-            # DNS failure, connection refused, TLS errors. Retrying DNS rarely
-            # helps but costs little; everything else here is transient enough.
             last_note = f"{type(e).__name__} (attempt {attempt + 1})"
             time.sleep(BACKOFF_BASE ** attempt)
             continue
 
         if resp.status_code == 429:
-            # respect Retry-After if the server sent one, but cap it --
-            # this is a 12-record run, not a crawler that can afford to wait 5 min
             wait = min(int(resp.headers.get("Retry-After", BACKOFF_BASE ** (attempt + 1))), 30)
             last_note = f"429, waited {wait}s (attempt {attempt + 1})"
             time.sleep(wait)
@@ -86,7 +67,6 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
             continue
 
         if resp.status_code == 403:
-            # bot walls 403 plain HTTP clients but often let a real browser in
             result = _load_in_browser(url, "ok_rendered",
                                       "403 over plain HTTP, retried in a real browser; ")
             if result.status == "ok_rendered":
@@ -95,7 +75,6 @@ def fetch(url: str, session: requests.Session) -> FetchResult:
                                note="HTTP 403 and the browser did not get through either")
 
         if resp.status_code != 200:
-            # 404/410: retrying will not change the answer
             return FetchResult(url, "http_error", _now(), note=f"HTTP {resp.status_code}")
 
         return _load_in_browser(str(resp.url), "ok")
